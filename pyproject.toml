@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "impara"
-version = "0.2.0"
-description = "A simple calculator package and command-line tool"
+version = "0.3.0"
+description = "Discover real, evidence-backed problems worth building"
 readme = "README.md"
 authors = [{ name = "ivanbright", email = "mugishaivanbright250@gmail.com" }]
 classifiers = [

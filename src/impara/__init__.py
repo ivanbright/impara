@@ -1,6 +1,21 @@
-"""impara: a simple calculator package."""
-__version__ = "0.2.0"
+"""impara: discover real, evidence-backed problems worth building.
 
-from .operations import add, multiply, average
+Public API::
 
-__all__ = ["add", "multiply", "average"]
+    from impara import discover, investigate
+
+The arithmetic helpers from 0.2.0 are retained for backward compatibility.
+"""
+__version__ = "0.3.0"
+
+from .operations import add, average, multiply
+from .pipeline import discover, investigate
+
+__all__ = [
+    "add",
+    "multiply",
+    "average",
+    "discover",
+    "investigate",
+    "__version__",
+]
