@@ -117,17 +117,64 @@ def _merged_terms(group: List[Signal]) -> List[str]:
     return [t for t, _ in ranked[:14]]
 
 
+_MAX_TITLE = 95
+
+
+def _claim_line(signal: Signal) -> str:
+    """A verbatim claim from the signal text - the thing someone actually said.
+
+    Search excerpts are truncated at the *start*, so a headline must not
+    begin blind in the middle of a word. We prefer to start at a sentence
+    boundary near the beginning, and mark a mid-stream fragment with '...'.
+    """
+    import html
+
+    text = re.sub(r"\s+", " ", html.unescape((signal.excerpt or "").strip()))
+    if not text:
+        return ""
+    if len(text) <= _MAX_TITLE:
+        return text
+
+    bounds = sorted(m.start() for m in re.finditer(r"(?<=[.!?])\s", text))
+    start = 0
+    for b in bounds:
+        if 8 <= b <= 60 and len(text) - b > 24:
+            start = b + 1
+            break
+    frag = text[start:]
+    prefix = "\u2026" if (start or text[0].islower()) else ""
+    if len(frag) <= _MAX_TITLE:
+        return prefix + frag
+
+    cut = _MAX_TITLE
+    for b in bounds:
+        if b > start and b - start <= _MAX_TITLE:
+            cut = b - start + 1
+            break
+    if cut == _MAX_TITLE:
+        space = frag.rfind(" ", 0, _MAX_TITLE)
+        if space > 10:
+            cut = space
+    return prefix + frag[:cut].rstrip(" .,;:") + "\u2026"
+
+
 def _title_for(head: Signal, group: List[Signal]) -> str:
-    """Prefer the human-written title from the source - it is observed text,
-    not something Impara composed. Only fall back to shared vocabulary."""
-    raw = re.sub(r"\s+", " ", (head.title or "").strip())
-    raw = raw.strip(".,;:-—|")
-    if raw and len(raw) >= 8:
-        return raw[:95]
+    """A real headline is what someone actually said about the problem.
+
+    Voice never 'resumes' a thread; it points at a complaint. So the default
+    headline is a verbatim claim line from the strongest signal's text.
+    Source thread titles ("Ask HN: ...") are how a thread is named, not why
+    the problem exists, and are never used as a problem title.
+    """
+    claim = _claim_line(head)
+    if claim and len(claim) >= 12:
+        return claim
     if len(group) > 1:
         shared = _merged_terms(group)
         if shared:
             return " | ".join(shared[:4])
-    if raw:
-        return raw[:95]
-    return (head.excerpt or "Unnamed problem")[:95]
+    raw = re.sub(r"\s+", " ", (head.title or "").strip())
+    raw = raw.strip(".,;:-—|")
+    if raw and len(raw) >= 8:
+        return raw[:_MAX_TITLE]
+    return (head.excerpt or "Unnamed problem")[:_MAX_TITLE]

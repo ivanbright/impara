@@ -337,8 +337,132 @@ def test_opportunity_roundtrips_to_json():
     blob = json.dumps(opps[0].to_dict())
     data = json.loads(blob)
     assert data["id"].startswith("#")
-    assert data["score"]["dimensions"][0]["kind"] in ("observed", "inferred")
+    assert data["score"]["dimensions"][0]["kind"] in ("observed", "inferred", "unknown")
     assert data["profile"]["evidence"]
+
+
+def _raw_signal(sid, text, title="", source="hackernews"):
+    return Signal(
+        id=sid,
+        source=source,
+        title=title,
+        excerpt=text,
+        url="https://example.com/%s" % sid,
+        patterns=["wish"],
+        terms=["x"],
+        author="a",
+        engagement=1,
+        observed_at="2026-01-01",
+        thread="",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Ingest quality: screening and corpus-level filters
+# --------------------------------------------------------------------------- #
+def test_collect_signals_screens_noise_before_clustering(monkeypatch):
+    import impara.cli as cli
+    import impara.store as store
+
+    noise = _raw_signal("n", "I Wish There Was an App For", title="I Wish There Was an App For")
+    real = _raw_signal("r", "Nothing imports my invoices so I reconcile by hand every month.")
+    monkeypatch.setattr(cli, "collect", lambda **kw: ([noise, real], []))
+    monkeypatch.setattr(store, "load_signals", lambda: [])
+    monkeypatch.setattr(store, "save_signals", lambda sigs: None)
+
+    args = _namespace(market="", country="")
+    got = cli._collect_signals(args)
+    assert [s.id for s in got] == ["r"]
+
+
+def test_market_filter_applies_to_the_whole_corpus_not_just_the_fetch(monkeypatch):
+    import impara.cli as cli
+    import impara.store as store
+
+    saved_edu = _raw_signal(
+        "e", "Education finance is a mess because no tool imports the data.",
+        title="Education finance",
+    )
+    fresh_finance = _raw_signal(
+        "f", "Nothing imports my invoices so I reconcile by hand every month.",
+        title="Invoice exports",
+    )
+    monkeypatch.setattr(cli, "collect", lambda **kw: ([fresh_finance], []))
+    monkeypatch.setattr(store, "load_signals", lambda: [saved_edu])
+    monkeypatch.setattr(store, "save_signals", lambda sigs: None)
+
+    args = _namespace(market="education", country="")
+    got = cli._collect_signals(args)
+    assert [s.id for s in got] == ["e"]
+
+
+def _namespace(market, country):
+    class A:
+        pass
+
+    A.source = None
+    A.market = market
+    A.country = country
+    A.per_source = 30
+    A.deep = False
+    A.fresh = False
+    A.json = False
+    A._progress = staticmethod(lambda m: None)
+    return A()
+
+
+def test_problem_title_is_a_verbatim_claim_not_a_thread_title():
+    thread_title = "Ask HN: How to avoid LLMs struggling with Lisp parens?"
+    excerpt = "I cannot get my Lisp parser to handle mismatched parens without losing the stack trace."
+    signal = _raw_signal("t", excerpt, title=thread_title)
+    probs = cluster_signals([signal])
+    assert probs
+    title = probs[0].title
+    assert "Ask HN" not in title
+    assert title == excerpt
+
+
+def test_long_excerpt_title_is_clipped_not_invented():
+    excerpt = (
+        "I still cannot find any way to bulk export a decade of invoicing history, and "
+        "it is driving me mad because my accountant needs it by the end of every month."
+    )
+    signal = _raw_signal("t2", excerpt, title="Ask HN: Bookkeeping exports")
+    probs = cluster_signals([signal])
+    title = probs[0].title
+    assert "Ask HN" not in title
+    assert title.strip("\u2026") in excerpt
+    assert len(title) <= 95
+
+
+def test_mid_stream_excerpt_starts_at_a_sentence_boundary_and_is_marked():
+    excerpt = (
+        "losing the stack trace every single time. I have tried everything and "
+        "nothing works for our team this quarter honestly."
+    )
+    signal = _raw_signal("t3", excerpt)
+    probs = cluster_signals([signal])
+    title = probs[0].title
+    assert title.startswith("\u2026")
+    assert title.lstrip("\u2026").startswith("I have tried")
+    assert "\u2026I have tried everything and nothing works for our team this quarter" in title + "\u2026"
+
+
+def test_title_unescapes_html_entities():
+    signal = _raw_signal("t4", "I can&#x27;t find any way to export data &amp; it drives me mad.")
+    probs = cluster_signals([signal])
+    title = probs[0].title
+    assert "can't" in title
+    assert " & " in title
+
+
+def test_main_without_a_subcommand_points_at_problems(capsys):
+    from impara.cli import main
+
+    code = main([])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "impara problems" in out
 
 
 # --------------------------------------------------------------------------- #

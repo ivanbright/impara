@@ -101,7 +101,8 @@ def render_score(score: OpportunityScore) -> str:
 
 
 def render_opportunity_list(opportunities: Sequence[Opportunity], limit: int = 0,
-                            filtered: int = 0, total_signals: int = 0) -> str:
+                            filtered: int = 0, total_signals: int = 0,
+                            pre_filter: int = 0) -> str:
     if not opportunities:
         lines = [DOUBLE, "INSUFFICIENT EVIDENCE", DOUBLE, ""]
         if total_signals:
@@ -117,6 +118,16 @@ def render_opportunity_list(opportunities: Sequence[Opportunity], limit: int = 0
             lines.append("")
             lines.append("  Try:  impara discover --all        (show single-signal leads)")
             lines.append("        impara discover --deep      (scan more of each thread)")
+        elif pre_filter:
+            lines.extend(
+                (
+                    "  %d signal(s) matched the fetch, but --market/--country\n"
+                    "  filtered every one of them out. Nothing here aligns with\n"
+                    "  that filter, and Impara would rather report nothing than\n"
+                    "  stretch a mismatch into a problem."
+                    % pre_filter
+                ).splitlines()
+            )
         else:
             lines.extend(
                 "  No fetched text contained a complaint pattern, so nothing is\n"
@@ -289,8 +300,9 @@ def render_problem_pool(result: "UnderstandingResult", limit: int = 15) -> str:
             lines.append("")
             lines.append("  EVIDENCE")
         for claim in observed:
-            for line in wrap(claim.text, 60):
-                lines.append("    " + line)
+            if claim.text != statement.statement:
+                for line in wrap(claim.text, 60):
+                    lines.append("    " + line)
             for quote in claim.quotes:
                 for line in wrap('"%s"' % quote.text, 56):
                     lines.append("      " + line)
@@ -315,7 +327,7 @@ def render_problem_pool(result: "UnderstandingResult", limit: int = 15) -> str:
 
     if result.dropped:
         lines.append(RULE)
-        lines.append("DROPPED (did not verify against source text)")
+        lines.append("DROPPED (rejected at the evidence boundary)")
         for reason in result.rejected[:10]:
             for line in wrap(reason, 62):
                 lines.append("  - " + line)

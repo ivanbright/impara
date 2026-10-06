@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from . import __version__, add, average, multiply
 from .cluster import cluster_signals
 from .define import build_definition
-from .extract import collect
+from .extract import _matches_filter, collect
 from .models import Confidence, Opportunity, SourceHealth
 from .profile import build_profile
 from .llm import config_from_env
@@ -22,7 +22,7 @@ from .render import (
 )
 from .scoring import score_opportunity
 from .store import find, load, save
-from .understand import understand_batch
+from .understand import screen_signals, understand_batch
 from .validate import build_validation_plan
 
 SOURCE_CHOICES = ["github", "hackernews", "stackexchange"]
@@ -56,8 +56,8 @@ def _collect_signals(args) -> "List[Any]":
 
     signals, health = collect(
         sources=sources,
-        market=getattr(args, "market", "") or "",
-        country=getattr(args, "country", "") or "",
+        market=args.market or "",
+        country=args.country or "",
         per_source=args.per_source,
         deep=args.deep,
         progress=progress,
@@ -78,10 +78,27 @@ def _collect_signals(args) -> "List[Any]":
             % (len(corpus), len(new))
         )
 
+    # Content filter, read-time: jokey or link-only text and removal notes are
+    # not evidence, so they never enter clustering. The saved corpus keeps the
+    # raw text; only what is used drops them.
+    usable, skipped = screen_signals(corpus)
+    if skipped:
+        progress("content filter: %d of %d signal(s) not useable as evidence\n"
+                 % (len(skipped), len(corpus)))
+
+    # Filters apply to the whole merged corpus, not just this run's fetch.
+    # Otherwise --market/--country silently do nothing against saved signals.
+    args._pre_filter = len(usable)
+    for term in (getattr(args, "market", "") or "", getattr(args, "country", "") or ""):
+        if term:
+            usable = [s for s in usable if _matches_filter(s, term)]
+    progress("filtered to %d signal(s)\n" % len(usable))
+
     args._health = health
-    args._signals = len(corpus)
-    args._sources = len({s.source for s in corpus})
-    return corpus
+    args._signals = len(usable)
+    args._corpus_total = len(corpus)
+    args._sources = len({s.source for s in usable})
+    return usable
 
 
 def _run_discovery(args) -> "List[Opportunity]":
@@ -161,6 +178,7 @@ def cmd_discover(args) -> int:
             limit=args.limit,
             filtered=getattr(args, "_filtered", 0),
             total_signals=getattr(args, "_signals", 0),
+            pre_filter=getattr(args, "_pre_filter", 0),
         )
     )
 
@@ -173,7 +191,7 @@ def cmd_problems(args) -> int:
     """ingest -> filter -> understand -> verify -> present the pool."""
     signals = _collect_signals(args)
     config = config_from_env()
-    result = understand_batch(signals, config=config)
+    result = understand_batch(signals, config=config, batch_size=args.batch_size)
 
     if args.json:
         payload = result.to_dict()
@@ -403,6 +421,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="ignore the saved signal corpus and use only this run's signals",
     )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=40,
+        help="signals per model request (smaller batches fit free-tier token budgets, default 40)",
+    )
     p.set_defaults(func=cmd_problems)
 
     p = sub.add_parser("sources", help="show which signal sources are reachable")
@@ -462,6 +486,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not hasattr(args, "func"):
         parser.print_help()
+        print()
+        print(
+            "Start with:\n"
+            "  impara problems    a pool of real problems backed by verbatim quotes\n"
+            "                     (set IMPARA_LLM_BASE_URL + IMPARA_LLM_MODEL for a model)\n"
+            "  impara discover    the same signals, no model required - an evidence trail\n"
+        )
         return 1
 
     # Calculator subcommands return a value; discovery subcommands return exit code.

@@ -19,19 +19,18 @@ Requires Python 3.8+. The optional interactive UI needs Python 3.9+ and Textual
 ## Quick start
 
 ```bash
-impara discover                    # corroborated problems (2+ signals)
+impara problems                    # a pool of real problems backed by verbatim quotes
+impara problems --json             # (set a model first - see below)
+
+impara discover                    # same signals, no model needed - an evidence trail
 impara discover --all              # include single-signal leads
 impara discover --market education
 impara discover --country rwanda
 impara discover --deep             # also scan the rest of each matched thread
-impara discover --json             # machine-readable output
 
 impara investigate #001            # full problem profile + evidence
 impara validate   #001             # what to check before building
 impara define     #001             # narrow MVP, features deliberately excluded
-
-impara problems                    # problem statements backed by verbatim quotes
-impara problems --json
 
 impara sources                     # live source health
 impara corpus                      # accumulated signal evidence
@@ -59,6 +58,12 @@ impara problems
 Without a model, `impara problems` runs the deterministic pipeline and tells
 you exactly that it did; it never guesses to fill the gap. `impara discover`
 keeps working regardless.
+
+Neither command invents a problem. Joke- and link-only snippets and
+moderation notes are filtered out before they can be cited, and every
+`discover` headline is a verbatim claim from a real signal - never a thread
+title written by someone else. `--market`/`--country` filter the *whole*
+corpus, not just the newest fetch.
 
 ### Useful flags
 

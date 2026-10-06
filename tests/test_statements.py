@@ -115,6 +115,133 @@ def test_chat_reports_a_malformed_response_instead_of_crashing():
         chat(config(), [{"role": "user", "content": "hi"}], transport=lambda c, b: {})
 
 
+def test_chat_sends_the_exact_configured_payload_to_the_transport():
+    sent = {}
+
+    def capture(cfg, body):
+        sent.update(body)
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    cfg = LLMConfig(
+        base_url="https://api.groq.com/openai/v1",
+        model="openai/gpt-oss-120b",
+        api_key="sk-test-3",
+    )
+    chat(
+        cfg,
+        [{"role": "user", "content": "Reply with exactly: hello"}],
+        transport=capture,
+    )
+    assert sent == {
+        "model": "openai/gpt-oss-120b",
+        "messages": [{"role": "user", "content": "Reply with exactly: hello"}],
+        "temperature": 0.0,
+    }
+
+
+def test_outgoing_request_has_an_explicit_identifiable_user_agent(monkeypatch):
+    import urllib.request
+
+    from impara import __version__
+
+    class FakeResponse:
+        def read(self):
+            return b'{"choices":[{"message":{"content":"ok"}}]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    seen = []
+
+    def fake_urlopen(request, timeout=None):
+        seen.append(request)
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    cfg = LLMConfig(
+        base_url="https://api.groq.com/openai/v1",
+        model="openai/gpt-oss-120b",
+        api_key="sk-test-3",
+    )
+    chat(cfg, [{"role": "user", "content": "Reply with exactly: hello"}])
+
+    assert len(seen) == 1
+    req = seen[0]
+    assert req.method == "POST"
+    assert req.full_url == "https://api.groq.com/openai/v1/chat/completions"
+    assert req.get_header("Content-type") == "application/json"
+    assert req.get_header("Authorization") == "Bearer sk-test-3"
+    user_agent = req.get_header("User-agent")
+    assert user_agent == "impara/%s" % __version__
+    assert "urllib" not in user_agent.lower()
+    body = json.loads(req.data)
+    assert body["model"] == "openai/gpt-oss-120b"
+    assert body["messages"] == [{"role": "user", "content": "Reply with exactly: hello"}]
+    assert body["temperature"] == 0.0
+    assert set(body) == {"model", "messages", "temperature"}
+    assert "sk-test-3" not in req.full_url
+    assert "sk-test-3" not in req.data.decode("utf-8")
+
+
+def test_rate_limited_requests_are_retried_with_backoff(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    from impara import llm as llm_module
+
+    calls = []
+    sleeps = []
+
+    class FakeResponse:
+        def read(self):
+            return b'{"choices":[{"message":{"content":"ok"}}]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(request)
+        if len(calls) < 3:
+            raise urllib.error.HTTPError(
+                request.full_url, 429, "Too Many Requests", {"Retry-After": "0"}, None
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    cfg = LLMConfig(base_url="https://api.groq.com/openai/v1", model="m", api_key="k")
+    assert chat(cfg, [{"role": "user", "content": "hi"}]) == "ok"
+    assert len(calls) == 3
+    assert sleeps == [0.0, 0.0]
+
+
+def test_giving_up_on_a_rate_limit_still_reports_it(monkeypatch):
+    import urllib.error
+
+    from impara import llm as llm_module
+
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.HTTPError(
+            request.full_url, 429, "Too Many Requests", {"Retry-After": "300"}, None
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: None)
+
+    cfg = LLMConfig(base_url="https://api.groq.com/openai/v1", model="m", api_key="k")
+    with pytest.raises(LLMError) as exc_info:
+        chat(cfg, [{"role": "user", "content": "hi"}])
+    assert "HTTP 429" in str(exc_info.value)
+
+
 def test_extract_json_tolerates_code_fences():
     got = extract_json('```json\n{"problems": []}\n```')
     assert got == {"problems": []}
@@ -279,22 +406,29 @@ def valid_payload(signal):
     return {
         "problems": [
             {
-                "statement": "Freelancers re-enter invoicing data every month.",
-                "domain": "Finance",
+                "signal_id": signal.id,
+                "has_problem": True,
+                "problem": "Freelancers re-enter invoicing data by hand every month.",
                 "who": ["freelancer"],
-                "claims": [
-                    {
-                        "text": "Nothing imports their invoicing history.",
-                        "kind": "observed",
-                        "quotes": [
-                            {"signal_id": signal.id, "quote": signal.excerpt[:60]}
-                        ],
-                    }
-                ],
-                "unanswered": ["Would they pay to fix it?"],
+                "domain": "billing automation",
+                "evidence": signal.excerpt[:60],
+                "unanswered": ["What triggers the manual step?"],
             }
         ]
     }
+
+
+def entry_payload(signal, statement, evidence=None, **extra):
+    entry = {
+        "signal_id": signal.id,
+        "has_problem": True,
+        "problem": statement,
+        "who": ["freelancer"],
+        "domain": "billing automation",
+        "evidence": evidence if evidence is not None else signal.excerpt[:60],
+    }
+    entry.update(extra)
+    return {"problems": [entry]}
 
 
 def test_without_a_model_understanding_is_marked_unavailable():
@@ -321,8 +455,8 @@ def test_valid_statement_survives_the_model_round_trip():
 
     statement = result.statements[0]
     assert statement.understanding == "llm"
-    assert statement.domain == "Finance"
-    assert statement.unanswered == ["Would they pay to fix it?"]
+    assert statement.domain == "billing automation"
+    assert statement.unanswered == ["What triggers the manual step?"]
 
     quote = statement.claims[0].quotes[0]
     assert quote.url == "https://news.example/story/1"
@@ -334,7 +468,7 @@ def test_valid_statement_survives_the_model_round_trip():
 def test_model_output_with_a_fabricated_quote_is_dropped():
     s = sig("sig-001", LONG_TEXT)
     payload = valid_payload(s)
-    payload["problems"][0]["claims"][0]["quotes"][0]["quote"] = (
+    payload["problems"][0]["evidence"] = (
         "This is not text that appears anywhere in the fetched signal."
     )
     result = understand([s], config=config(), transport=fake_transport(payload))
@@ -350,14 +484,10 @@ def test_model_cannot_cite_a_screened_out_signal():
     payload = {
         "problems": [
             {
-                "statement": "Something is broken.",
-                "claims": [
-                    {
-                        "text": "It is broken.",
-                        "kind": "observed",
-                        "quotes": [{"signal_id": "sig-n", "quote": noise.excerpt}],
-                    }
-                ],
+                "signal_id": "sig-n",
+                "has_problem": True,
+                "problem": "Something is broken.",
+                "evidence": noise.excerpt,
             }
         ]
     }
@@ -394,34 +524,156 @@ def test_parse_statements_rejects_empty_output():
     assert kept == [] and rejected == []
 
 
-def test_inferred_claims_without_quotes_are_pruned_not_trusted():
-    s = sig("sig-001", LONG_TEXT)
+# --------------------------------------------------------------------------- #
+# Evidence boundary: the extraction contract is enforced twice - in the prompt
+# and again as a deterministic wall in parse_statements/_violation_reason.
+# --------------------------------------------------------------------------- #
+def test_genuine_workflow_problem_is_accepted():
+    s = sig("sig-1", LONG_TEXT)
+    result = understand([s], config=config(), transport=fake_transport(valid_payload(s)))
+    assert len(result.statements) == 1
+    assert result.dropped == 0
+
+
+def test_solution_suggestion_is_rejected():
+    s = sig("sig-1", LONG_TEXT)
+    payload = entry_payload(
+        s, "Build an AI-powered email automation platform for freelancers."
+    )
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert result.statements == []
+    assert result.dropped == 1
+    assert any("solution" in r for r in result.rejected)
+
+
+def test_generic_wish_for_an_app_is_rejected():
+    s = sig("sig-1", LONG_TEXT)
+    payload = entry_payload(s, "I wish there was an app for organizing receipts.")
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert result.statements == []
+    assert any("wish or opportunity language" in r for r in result.rejected)
+
+
+def test_emotional_venting_without_a_mechanism_is_rejected():
+    s = sig("sig-1", LONG_TEXT)
+    payload = entry_payload(s, "This is just so annoying.")
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert result.statements == []
+    assert any("emotional venting" in r for r in result.rejected)
+
+
+def test_commentary_only_signal_is_rejected_at_the_contract():
+    s = sig("sig-c", LONG_TEXT)
     payload = {
         "problems": [
             {
-                "statement": "Freelancers re-enter invoicing data every month.",
-                "claims": [
-                    {
-                        "text": "Nothing imports their invoicing history.",
-                        "kind": "observed",
-                        "quotes": [
-                            {"signal_id": s.id, "quote": s.excerpt[:60]}
-                        ],
-                    },
-                    {
-                        "text": "They would pay for a fix.",
-                        "kind": "observed",
-                        "quotes": [],
-                    },
-                ],
+                "signal_id": "sig-c",
+                "has_problem": False,
+                "reject_reason": "commentary on moderation, not a problem",
             }
         ]
     }
-    kept, rejected = parse_statements(payload, [s])
-    assert len(kept) == 1
-    assert rejected == []
-    assert len(kept[0].claims) == 1
-    assert kept[0].quote_count == 1
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert result.statements == []
+    assert result.dropped == 1
+    assert any("sig-c" in r and "commentary" in r for r in result.rejected)
+
+
+def test_exact_verbatim_quote_is_accepted():
+    s = sig("sig-1", LONG_TEXT)
+    payload = entry_payload(s, "Billing data is re-keyed by hand every month.")
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert len(result.statements) == 1
+    quote = result.statements[0].claims[0].quotes[0]
+    assert quote.text == s.excerpt[:60]
+    assert quote.signal_id == s.id
+
+
+def test_altered_quote_is_rejected_by_the_verifier():
+    s = sig("sig-1", LONG_TEXT)
+    payload = entry_payload(
+        s, "Billing data is re-keyed by hand every month.", evidence=LONG_TEXT[:20] + " KEPT THE SAME"
+    )
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert result.statements == []
+    assert any("not verbatim" in r for r in result.rejected)
+
+
+def test_statement_with_unsupported_facts_is_rejected():
+    s = sig("sig-1", LONG_TEXT)
+    payload = entry_payload(
+        s, "90% of freelancers re-enter billing data by hand every month."
+    )
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert result.statements == []
+    assert any("evidence does not contain" in r for r in result.rejected)
+
+
+def test_statement_proposing_a_specific_solution_is_rejected():
+    s = sig("sig-1", LONG_TEXT)
+    payload = entry_payload(
+        s, "The company should add a one-click import API to end manual entry."
+    )
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert result.statements == []
+    assert any("solution" in r for r in result.rejected)
+
+
+def test_concrete_engineering_shaped_statement_is_accepted():
+    s = sig("sig-1", LONG_TEXT)
+    statement = (
+        "Billing amounts from incoming emails require manual extraction "
+        "into Google Sheets."
+    )
+    result = understand([s], config=config(), transport=fake_transport(entry_payload(s, statement)))
+    assert len(result.statements) == 1
+    assert result.statements[0].statement == statement
+
+
+def test_supported_number_in_the_statement_is_not_rejected():
+    s = sig("sig-1", LONG_TEXT + " It costs $15 per dispute to process.")
+    payload = entry_payload(
+        s,
+        "Processing a disputed billing charge costs $15 per dispute.",
+        evidence=LONG_TEXT + " It costs $15 per dispute to process.",
+    )
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert len(result.statements) == 1
+
+
+def test_question_only_evidence_is_rejected():
+    question = "Why doesn't GitHub support the fast-forward merge strategy?"
+    s = sig("sig-q1", question)
+    payload = entry_payload(
+        s,
+        "GitHub does not support the fast-forward merge strategy.",
+        evidence=question,
+    )
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert result.statements == []
+    assert result.dropped == 1
+    assert any("bare question" in r for r in result.rejected)
+
+
+def test_question_evidence_that_reports_a_failure_is_accepted():
+    question = "Why does the exporter crash on every large file?"
+    s = sig("sig-q2", question)
+    payload = entry_payload(
+        s,
+        "The exporter crashes on every large file.",
+        evidence=question,
+    )
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert len(result.statements) == 1
+    assert result.dropped == 0
+
+
+def test_statement_that_is_itself_a_question_is_rejected():
+    s = sig("sig-1", LONG_TEXT)
+    payload = entry_payload(s, "Is there no way to import my invoicing history?")
+    result = understand([s], config=config(), transport=fake_transport(payload))
+    assert result.statements == []
+    assert any("question" in r for r in result.rejected)
 
 
 # --------------------------------------------------------------------------- #
@@ -473,7 +725,7 @@ def test_problems_presents_a_verified_pool(monkeypatch, capsys):
     monkeypatch.setattr(
         cli,
         "understand_batch",
-        lambda signals, config=None: understand(
+        lambda signals, config=None, batch_size=40: understand(
             signals, config=config, transport=fake_transport(valid_payload(s))
         ),
     )

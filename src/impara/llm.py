@@ -15,17 +15,22 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 DEFAULT_TIMEOUT = 60
+DEFAULT_MAX_TOKENS = 4096
+MAX_429_ATTEMPTS = 3
+RATE_LIMIT_WAIT_CAP = 120.0
 
 ENV_BASE_URL = "IMPARA_LLM_BASE_URL"
 ENV_MODEL = "IMPARA_LLM_MODEL"
 ENV_API_KEY = "IMPARA_LLM_API_KEY"
 ENV_TIMEOUT = "IMPARA_LLM_TIMEOUT"
+ENV_MAX_TOKENS = "IMPARA_LLM_MAX_TOKENS"
 
 HINT = (
     "Set %s and %s to any OpenAI-compatible server.\n"
@@ -50,6 +55,7 @@ class LLMConfig:
     api_key: str = ""
     timeout: int = DEFAULT_TIMEOUT
     temperature: float = 0.0
+    max_tokens: int = 0  # 0 = leave to the provider's default
 
     @property
     def endpoint(self) -> str:
@@ -87,11 +93,20 @@ def config_from_env(env: Optional[Mapping[str, str]] = None) -> Optional[LLMConf
     except ValueError:
         timeout = DEFAULT_TIMEOUT
 
+    max_raw = _get(env, ENV_MAX_TOKENS)
+    try:
+        max_tokens = int(max_raw) if max_raw else DEFAULT_MAX_TOKENS
+    except ValueError:
+        max_tokens = DEFAULT_MAX_TOKENS
+    if max_tokens < 0:
+        max_tokens = 0
+
     return LLMConfig(
         base_url=base_url,
         model=model,
         api_key=_get(env, ENV_API_KEY, "OPENAI_API_KEY"),
         timeout=max(1, timeout),
+        max_tokens=max_tokens,
     )
 
 
@@ -105,10 +120,30 @@ def unavailable_reason(env: Optional[Mapping[str, str]] = None) -> str:
     return HINT
 
 
+def _retry_delay(exc: urllib.error.HTTPError, attempt: int) -> float:
+    """Seconds to wait before retrying a rate-limited request."""
+    raw = exc.headers.get("Retry-After")
+    if raw:
+        try:
+            return max(0.0, min(float(raw), RATE_LIMIT_WAIT_CAP))
+        except ValueError:
+            pass
+    try:
+        detail = exc.read().decode("utf-8", "replace")
+    except Exception:
+        detail = ""
+    m = re.search(r"try again in ([\d.]+)\s*s", detail, re.IGNORECASE)
+    if m:
+        return max(0.0, min(float(m.group(1)), RATE_LIMIT_WAIT_CAP))
+    return min(30.0, 5.0 * 2 ** (attempt - 1))
+
+
 def _urlopen_transport(config: LLMConfig, payload: Dict[str, Any]) -> Dict[str, Any]:
     headers = {"Content-Type": "application/json"}
     if config.api_key:
         headers["Authorization"] = "Bearer " + config.api_key
+    from . import __version__
+    headers["User-Agent"] = "impara/%s" % __version__
 
     request = urllib.request.Request(
         config.endpoint,
@@ -116,20 +151,27 @@ def _urlopen_transport(config: LLMConfig, payload: Dict[str, Any]) -> Dict[str, 
         headers=headers,
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=config.timeout) as response:
-            raw = response.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        detail = ""
+    attempts = 0
+    while True:
+        attempts += 1
         try:
-            detail = exc.read().decode("utf-8", "replace")[:300]
-        except Exception:
-            pass
-        raise LLMError("server returned HTTP %d for %s: %s" % (exc.code, config.endpoint, detail))
-    except urllib.error.URLError as exc:
-        raise LLMError("cannot reach %s: %s" % (config.endpoint, getattr(exc, "reason", exc)))
-    except socket.timeout:
-        raise LLMError("timed out after %ds talking to %s" % (config.timeout, config.endpoint))
+            with urllib.request.urlopen(request, timeout=config.timeout) as response:
+                raw = response.read().decode("utf-8", "replace")
+            break
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                pass
+            if exc.code == 429 and attempts < MAX_429_ATTEMPTS:
+                time.sleep(_retry_delay(exc, attempts))
+                continue
+            raise LLMError("server returned HTTP %d for %s: %s" % (exc.code, config.endpoint, detail))
+        except urllib.error.URLError as exc:
+            raise LLMError("cannot reach %s: %s" % (config.endpoint, getattr(exc, "reason", exc)))
+        except socket.timeout:
+            raise LLMError("timed out after %ds talking to %s" % (config.timeout, config.endpoint))
 
     try:
         body = json.loads(raw)
@@ -151,6 +193,8 @@ def chat(
         "messages": messages,
         "temperature": config.temperature,
     }
+    if config.max_tokens > 0:
+        payload["max_tokens"] = config.max_tokens
     send = _urlopen_transport if transport is None else transport
     body = send(config, payload)
 
@@ -177,7 +221,15 @@ def extract_json(text: str) -> Any:
     try:
         return json.loads(body[start:end + 1])
     except ValueError as exc:
-        raise LLMError("model reply was not valid JSON: %s" % exc)
+        tail = body.rstrip()
+        truncated = not tail.endswith("}")
+        message = "model reply was not valid JSON: %s" % exc
+        if truncated:
+            message += (
+                "; the reply appears truncated - the model may have hit an "
+                "output limit or the account's credit budget"
+            )
+        raise LLMError(message)
 
 
 def chat_json(
