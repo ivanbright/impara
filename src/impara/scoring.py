@@ -69,7 +69,7 @@ def score_opportunity(problem: Problem) -> OpportunityScore:
     # --- Pain / severity ---------------------------------------------------
     pain_hits = len(PAIN_WORDS.findall(excerpts))
     phrase_hits = sum(1 for p, _ in SEVERITY_PHRASES if p in excerpts.lower())
-    pain = max(0, min(100, 30 + pain_hits * 7 + phrase_hits * 9))
+    pain = max(0, min(100, pain_hits * 7 + phrase_hits * 9))
     dims.append(
         ScoreDimension(
             key="pain",

@@ -6,7 +6,7 @@ Public API::
 
 The arithmetic helpers from 0.2.0 are retained for backward compatibility.
 """
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .operations import add, average, multiply
 from .pipeline import discover, investigate

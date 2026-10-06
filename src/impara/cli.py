@@ -42,6 +42,10 @@ def _run_discovery(args) -> "List[Opportunity]":
     quiet = bool(getattr(args, "json", False))
 
     def progress(msg: str) -> None:
+        sink = getattr(args, "_progress", None)
+        if sink is not None:
+            sink(msg)
+            return
         if not quiet:
             sys.stderr.write(msg)
             sys.stderr.flush()
@@ -241,6 +245,22 @@ def cmd_define(args) -> int:
     return 0
 
 
+def cmd_tui(args) -> int:
+    """Interactive terminal UI. Textual requires Python 3.9+."""
+    try:
+        from . import tui
+    except ImportError as exc:
+        sys.stderr.write(
+            "The interactive UI needs Textual, which requires Python 3.9+.\n"
+            "  %s\n"
+            "Install it with:  pip install \"impara[tui]\"\n"
+            "The plain CLI keeps working without it.\n" % exc
+        )
+        return 1
+
+    return tui.run(show_all=args.all)
+
+
 def cmd_list(args) -> int:
     loaded = load()
     if not loaded:
@@ -348,6 +368,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("problem_id")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_define)
+
+    p = sub.add_parser("tui", help="interactive terminal UI")
+    p.add_argument("--all", action="store_true", help="include single-signal leads")
+    p.set_defaults(func=cmd_tui)
 
     # -- back-compat calculator commands (published in 0.2.0) --
     p = sub.add_parser("add", help="add two numbers")

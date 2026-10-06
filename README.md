@@ -13,7 +13,8 @@ It is deliberately *not* a startup-idea generator. Impara is comfortable saying
 
     pip install impara
 
-Requires Python 3.8+.
+Requires Python 3.8+. The optional interactive UI needs Python 3.9+ and Textual
+(`pip install "impara[tui]"`).
 
 ## Quick start
 
@@ -33,6 +34,7 @@ impara sources                     # live source health
 impara corpus                      # accumulated signal evidence
 impara corpus --clear              # reset the local corpus
 impara list                        # re-show the last run
+impara tui                         # interactive browser over the same evidence
 ```
 
 ### Useful flags
@@ -52,6 +54,39 @@ impara list                        # re-show the last run
 Every verified signal is kept in a local corpus (`impara corpus`), so repeated
 runs build corroboration over time instead of re-deriving a scattered snapshot.
 That corpus is local to your machine and never uploaded.
+
+## Interactive mode
+
+```bash
+pip install "impara[tui]"
+impara tui           # browse the last run
+impara tui --all     # include single-signal leads
+```
+
+The TUI is a viewer over the same evidence the CLI prints; it infers nothing
+extra. Each problem has five tabs:
+
+| Tab | What it shows |
+|---|---|
+| Profile | problem statement, who complains, why it persists |
+| Evidence | every verified signal with the literal excerpt it matched |
+| Score | each dimension labelled `observed` or `inferred` |
+| Validate | what to confirm before building, plus confirming/invalidating evidence |
+| Define | narrow MVP and the features deliberately left out |
+
+| Key | Action |
+|---|---|
+| `?` | keyboard reference |
+| `s` | source health |
+| `d` | run a discovery scan (streams progress into the status bar) |
+| `r` | reload the saved run |
+| `a` | show / hide single-signal leads |
+| `f` | jump to the filter box |
+| `1`-`5`, `ctrl+←/→` | switch tabs |
+| `q` | quit |
+
+On Python 3.8, or when Textual is not installed, `impara tui` prints what to
+install and every other command keeps working unchanged.
 
 ## The workflow
 

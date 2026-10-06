@@ -331,4 +331,4 @@ def test_opportunity_roundtrips_to_json():
 # Version
 # --------------------------------------------------------------------------- #
 def test_version_is_newer_than_calculator_release():
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.4.0"
