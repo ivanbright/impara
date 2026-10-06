@@ -98,53 +98,42 @@ def score_opportunity(problem: Problem) -> OpportunityScore:
         )
     )
 
-    # --- Buildability ------------------------------------------------------
-    vocab = len(set(problem.terms))
-    build = 70 if vocab < 12 else (58 if vocab < 20 else 46)
-    build = max(20, min(95, build + (5 if n_signals <= 6 else -5)))
-    dims.append(
-        ScoreDimension(
-            key="buildability",
-            label="Buildability",
-            value=build,
-            kind=EvidenceKind.INFERRED,
-            reason="inferred from vocabulary spread (%d terms); not directly observed"
-            % vocab,
+    # --- Dimensions we cannot measure yet ---------------------------------
+    # Deliberately unscored. A number here would be decoration dressed as a
+    # measurement, so these are reported as unknown until an evidence-
+    # producing mechanism exists for them.
+    for key, label, why in (
+        (
+            "buildability",
+            "Buildability",
+            "nothing has been measured about how hard this would be to build",
+        ),
+        (
+            "competition",
+            "Competition",
+            "no competitor scan has been run",
+        ),
+        (
+            "monetization",
+            "Monetization",
+            "willingness-to-pay has not been observed in any signal",
+        ),
+    ):
+        dims.append(
+            ScoreDimension(
+                key=key,
+                label=label,
+                value=None,
+                kind=EvidenceKind.UNKNOWN,
+                reason="not measured: %s" % why,
+            )
         )
-    )
-    caveats.append("Buildability is inferred, not evidenced.")
+        caveats.append("%s is unknown - %s." % (label, why))
 
-    # --- Competition -------------------------------------------------------
-    competition = 60 if n_sources <= 1 else 52
-    dims.append(
-        ScoreDimension(
-            key="competition",
-            label="Competition",
-            value=competition,
-            kind=EvidenceKind.INFERRED,
-            reason="no competitor scan performed; value is a placeholder assumption"
-        )
+    measured = [d.value for d in dims if d.value is not None]
+    total = (
+        int(round(sum(measured) / float(len(measured)))) if measured else 0
     )
-    caveats.append("Competition is unmeasured. Run a competitor scan before trusting it.")
-
-    # --- Monetization ------------------------------------------------------
-    wants_phrase = bool(re.search(r"\b(i'?d pay|worth paying|shut up and take my money|"
-                                  r"paid (?:for|version|tool)|subscription)\b", excerpts, re.I))
-    monet = 70 if wants_phrase else (55 if pain >= 60 else 45)
-    dims.append(
-        ScoreDimension(
-            key="monetization",
-            label="Monetization",
-            value=monet,
-            kind=EvidenceKind.INFERRED,
-            reason="willingness-to-pay language %s; inferred from pain, not observed"
-            % ("present" if wants_phrase else "absent"),
-        )
-    )
-    if not wants_phrase:
-        caveats.append("No willingness-to-pay evidence found in any signal.")
-
-    total = int(round(sum(d.value for d in dims) / float(len(dims))))
     strength = evidence_strength(n_signals, n_sources, ev)
 
     if n_signals < 3 or n_sources < 2:

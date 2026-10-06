@@ -207,7 +207,7 @@ def test_tui_score_panel_keeps_observed_and_inferred_apart():
 
     run(app, body)
     assert "observed" in seen["score"]
-    assert "inferred" in seen["score"]
+    assert "unknown" in seen["score"]
     assert "CAVEATS" in seen["score"]
 
 

@@ -3,7 +3,7 @@
 Output is plain text by design: it must be readable in a terminal, pasteable
 into a document, and stable enough to diff between runs.
 """
-from typing import List, Optional, Sequence
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 from .models import (
     Opportunity,
@@ -13,6 +13,9 @@ from .models import (
     SourceHealth,
     ValidationPlan,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .understand import UnderstandingResult
 
 RULE = "-" * 66
 DOUBLE = "=" * 66
@@ -82,8 +85,10 @@ def render_score(score: OpportunityScore) -> str:
     ]
     width = max(len(d.label) for d in score.dimensions) if score.dimensions else 10
     for d in score.dimensions:
-        kind = "observed" if d.kind.value == "observed" else "inferred"
-        lines.append("%s %s   [%s]" % (d.label.ljust(width), str(d.value).rjust(3), kind))
+        shown = "unknown" if d.value is None else str(d.value)
+        lines.append(
+            "%s %s   [%s]" % (d.label.ljust(width), shown.rjust(7), d.kind.value)
+        )
     lines.append("")
     for d in score.dimensions:
         lines.append("  %s: %s" % (d.label, d.reason))
@@ -206,5 +211,116 @@ def render_definition(d: ProductDefinition) -> str:
     lines.extend(block("BUSINESS MODEL", d.business_model))
     lines.extend(block("TECHNICAL COMPLEXITY", d.technical_complexity))
     lines.extend(bullet_block("VALIDATION RISKS", d.validation_risks))
+    lines.append(RULE)
+    return "\n".join(lines)
+
+
+def render_problem_pool(result: "UnderstandingResult", limit: int = 15) -> str:
+    """Present the problem pool, or say plainly why there is none."""
+    lines: List[str] = []
+    kept = result.statements
+
+    lines.append(DOUBLE)
+    header = "PROBLEM STATEMENTS  %d kept" % len(kept)
+    if result.dropped:
+        header += " / %d dropped" % result.dropped
+    lines.append(header)
+    lines.append(DOUBLE)
+    summary = "model: %s    signals: %d" % (result.model or "-", result.signals_seen)
+    if result.screened:
+        summary += "    screened out: %d" % result.screened
+    lines.append(summary)
+
+    if not result.available:
+        lines.append("")
+        lines.append("SEMANTIC UNDERSTANDING UNAVAILABLE")
+        for line in (result.reason or "no model configured").splitlines():
+            for wrapped in wrap(line, 64):
+                lines.append("  " + wrapped)
+        lines.append("")
+        lines.append(
+            "Nothing was guessed. The deterministic evidence pipeline still runs:"
+        )
+        lines.append("  impara discover   real problems from the same signals")
+        lines.append("  impara corpus     the raw evidence behind them")
+        lines.append(DOUBLE)
+        return "\n".join(lines)
+
+    if not kept:
+        lines.append("")
+        lines.append(
+            "The model returned no statements that survived verification."
+        )
+        lines.append("The signals are still inspectable: impara discover")
+        lines.append(DOUBLE)
+        return "\n".join(lines)
+
+    shown = kept[: max(1, limit)]
+    for n, statement in enumerate(shown, 1):
+        lines.append("")
+        lines.append(RULE)
+        lines.append("PROBLEM %03d" % n)
+        lines.append(RULE)
+        for line in wrap(statement.statement, 66):
+            lines.append("  " + line)
+        lines.append("")
+
+        observed = [
+            c for c in statement.claims if c.kind.value == "observed"
+        ]
+        lines.append(
+            "  %-16s %s"
+            % ("domain", statement.domain or "-")
+        )
+        if statement.who:
+            lines.append("  %-16s %s" % ("who", ", ".join(statement.who)))
+        lines.append(
+            "  %-16s %s observed claim(s), %d quote(s)"
+            % ("evidence", len(observed), statement.quote_count)
+        )
+        if statement.sources:
+            lines.append("  %-16s %s" % ("sources", ", ".join(statement.sources)))
+        if statement.evidence_signals:
+            lines.append(
+                "  %-16s %s" % ("signals", ", ".join(statement.evidence_signals))
+            )
+
+        if observed:
+            lines.append("")
+            lines.append("  EVIDENCE")
+        for claim in observed:
+            for line in wrap(claim.text, 60):
+                lines.append("    " + line)
+            for quote in claim.quotes:
+                for line in wrap('"%s"' % quote.text, 56):
+                    lines.append("      " + line)
+                lines.append(
+                    "      <- %s (%s) %s"
+                    % (quote.signal_id, quote.source or "?", quote.url or "<no url>")
+                )
+            lines.append("")
+
+        if statement.unanswered:
+            lines.append("  OPEN QUESTIONS")
+            for question in statement.unanswered:
+                for line in wrap(question, 62):
+                    lines.append("    - " + line)
+            lines.append("")
+
+    if len(kept) > len(shown):
+        lines.append(RULE)
+        lines.append(
+            "... %d more (use --limit to show more)" % (len(kept) - len(shown))
+        )
+
+    if result.dropped:
+        lines.append(RULE)
+        lines.append("DROPPED (did not verify against source text)")
+        for reason in result.rejected[:10]:
+            for line in wrap(reason, 62):
+                lines.append("  - " + line)
+        if result.dropped > 10:
+            lines.append("  ... %d more" % (result.dropped - 10))
+
     lines.append(RULE)
     return "\n".join(lines)

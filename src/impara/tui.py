@@ -73,6 +73,8 @@ def _strength_style(conf: Confidence):
 def _kind_tag(kind: EvidenceKind) -> Text:
     if kind is EvidenceKind.OBSERVED:
         return Text("observed", style="bold green")
+    if kind is EvidenceKind.UNKNOWN:
+        return Text("unknown", style="bold magenta")
     return Text("inferred", style="bold italic yellow")
 
 
@@ -253,7 +255,16 @@ def render_score(op: Opportunity) -> Group:
     for d in sc.dimensions:
         row = Text()
         row.append("  %-12s " % d.label, style="bold")
-        row.append(_bar(d.value, 22, "green" if d.kind is EvidenceKind.OBSERVED else "blue"))
+        if d.value is None:
+            row.append("not measured".ljust(22), style="magenta")
+        else:
+            row.append(
+                _bar(
+                    d.value,
+                    22,
+                    "green" if d.kind is EvidenceKind.OBSERVED else "blue",
+                )
+            )
         row.append("  ")
         row.append(_kind_tag(d.kind))
         dims.append(row)

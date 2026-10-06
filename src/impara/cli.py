@@ -10,16 +10,19 @@ from .define import build_definition
 from .extract import collect
 from .models import Confidence, Opportunity, SourceHealth
 from .profile import build_profile
+from .llm import config_from_env
 from .render import (
     render_definition,
     render_health,
     render_opportunity_list,
+    render_problem_pool,
     render_profile,
     render_score,
     render_validation,
 )
 from .scoring import score_opportunity
-from .store import find, load
+from .store import find, load, save
+from .understand import understand_batch
 from .validate import build_validation_plan
 
 SOURCE_CHOICES = ["github", "hackernews", "stackexchange"]
@@ -37,7 +40,8 @@ def _dump(data: Any) -> None:
 # --------------------------------------------------------------------------- #
 # Core pipeline
 # --------------------------------------------------------------------------- #
-def _run_discovery(args) -> "List[Opportunity]":
+def _collect_signals(args) -> "List[Any]":
+    """Fetch and merge signals. Every command that reads evidence uses this."""
     sources = args.source or None
     quiet = bool(getattr(args, "json", False))
 
@@ -52,8 +56,8 @@ def _run_discovery(args) -> "List[Opportunity]":
 
     signals, health = collect(
         sources=sources,
-        market=args.market or "",
-        country=args.country or "",
+        market=getattr(args, "market", "") or "",
+        country=getattr(args, "country", "") or "",
         per_source=args.per_source,
         deep=args.deep,
         progress=progress,
@@ -74,9 +78,27 @@ def _run_discovery(args) -> "List[Opportunity]":
             % (len(corpus), len(new))
         )
 
+    args._health = health
+    args._signals = len(corpus)
+    args._sources = len({s.source for s in corpus})
+    return corpus
+
+
+def _run_discovery(args) -> "List[Opportunity]":
+    corpus = _collect_signals(args)
+    quiet = bool(getattr(args, "json", False))
+
+    def progress(msg: str) -> None:
+        sink = getattr(args, "_progress", None)
+        if sink is not None:
+            sink(msg)
+            return
+        if not quiet:
+            sys.stderr.write(msg)
+            sys.stderr.flush()
+
     progress("clustering %d verified signal(s) ...\n" % len(corpus))
     problems = cluster_signals(corpus, threshold=args.threshold)
-    args._signals = len(corpus)
 
     opportunities: List[Opportunity] = []
     for problem in problems:
@@ -99,10 +121,8 @@ def _run_discovery(args) -> "List[Opportunity]":
         }[args.min_evidence]
         opportunities = [o for o in opportunities if o.profile.evidence_strength in allowed]
 
-    from . import store
-
-    store.save(opportunities, health)
-    args._health = health
+    health: List[SourceHealth] = getattr(args, "_health", [])
+    save(opportunities, health)
     return opportunities
 
 
@@ -145,6 +165,28 @@ def cmd_discover(args) -> int:
     )
 
     if not opportunities:
+        return 1
+    return 0
+
+
+def cmd_problems(args) -> int:
+    """ingest -> filter -> understand -> verify -> present the pool."""
+    signals = _collect_signals(args)
+    config = config_from_env()
+    result = understand_batch(signals, config=config)
+
+    if args.json:
+        payload = result.to_dict()
+        payload["version"] = __version__
+        payload["signal_count"] = len(signals)
+        payload["source_count"] = len({s.source for s in signals})
+        _dump(payload)
+    else:
+        print(render_problem_pool(result, limit=args.limit))
+
+    # No model configured is a documented state, not a failure: the
+    # deterministic pipeline is still doing useful work.
+    if config is not None and not result.available:
         return 1
     return 0
 
@@ -339,6 +381,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="ignore the saved signal corpus and use only this run's signals",
     )
     p.set_defaults(func=cmd_discover)
+
+    p = sub.add_parser("problems", help="problem statements backed by verbatim evidence")
+    _add_common(p)
+    p.add_argument(
+        "--source",
+        action="append",
+        choices=SOURCE_CHOICES,
+        help="restrict to a source (repeatable)",
+    )
+    p.add_argument("--per-source", type=int, default=30, help="candidates to fetch per query")
+    p.add_argument("--market", default="", help="filter to a market, e.g. education")
+    p.add_argument("--country", default="", help="filter to a country, e.g. rwanda")
+    p.add_argument(
+        "--deep",
+        action="store_true",
+        help="expand matched threads for extra comments (slower, many more requests)",
+    )
+    p.add_argument(
+        "--fresh",
+        action="store_true",
+        help="ignore the saved signal corpus and use only this run's signals",
+    )
+    p.set_defaults(func=cmd_problems)
 
     p = sub.add_parser("sources", help="show which signal sources are reachable")
     p.add_argument("--json", action="store_true")

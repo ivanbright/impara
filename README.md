@@ -30,12 +30,35 @@ impara investigate #001            # full problem profile + evidence
 impara validate   #001             # what to check before building
 impara define     #001             # narrow MVP, features deliberately excluded
 
+impara problems                    # problem statements backed by verbatim quotes
+impara problems --json
+
 impara sources                     # live source health
 impara corpus                      # accumulated signal evidence
 impara corpus --clear              # reset the local corpus
 impara list                        # re-show the last run
 impara tui                         # interactive browser over the same evidence
 ```
+
+**Problem statements (`impara problems`)** are the pool of real problems your
+product could be about. Each one is traceable to the evidence that produced
+it: every claim maps to a verbatim quote from a signal, and every quote maps
+to a signal id and URL. Anything that cannot be traced is dropped or labelled,
+never silently trusted.
+
+A model turns the signals into statements. Any OpenAI-compatible server works
+(OpenAI, Ollama, LM Studio, ...) - bring your own key or run one locally:
+
+```bash
+set IMPARA_LLM_BASE_URL=http://localhost:11434/v1
+set IMPARA_LLM_MODEL=llama3.1
+
+impara problems
+```
+
+Without a model, `impara problems` runs the deterministic pipeline and tells
+you exactly that it did; it never guesses to fill the gap. `impara discover`
+keeps working regardless.
 
 ### Useful flags
 

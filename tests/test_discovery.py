@@ -135,29 +135,43 @@ def test_score_has_every_dimension_with_reason():
     assert 0 <= score.total <= 100
 
 
-def test_score_separates_observed_from_inferred():
+def test_score_separates_observed_from_unknown():
     score = score_opportunity(_problem())
     kinds = {d.key: d.kind for d in score.dimensions}
     assert kinds["evidence"] is EvidenceKind.OBSERVED
     assert kinds["frequency"] is EvidenceKind.OBSERVED
-    assert kinds["buildability"] is EvidenceKind.INFERRED
-    assert kinds["competition"] is EvidenceKind.INFERRED
-    assert kinds["monetization"] is EvidenceKind.INFERRED
+    assert kinds["buildability"] is EvidenceKind.UNKNOWN
+    assert kinds["competition"] is EvidenceKind.UNKNOWN
+    assert kinds["monetization"] is EvidenceKind.UNKNOWN
 
 
-def test_inferred_dimensions_are_caveated():
-    """An inferred number must never travel without an admission that it is one."""
+def test_unmeasured_dimensions_carry_no_number_and_are_caveated():
+    """No evidence mechanism means unknown - never a plausible-looking value."""
     score = score_opportunity(_problem())
     caveats = " ".join(score.caveats)
-    inferred = [d for d in score.dimensions if d.kind is EvidenceKind.INFERRED]
-    assert inferred, "fixture should produce at least one inferred dimension"
-    assert "Buildability is inferred" in caveats
-    assert "Competition is unmeasured" in caveats
-    for d in inferred:
-        assert d.kind.value in ("observed", "inferred")
+    unknown = [d for d in score.dimensions if d.kind is EvidenceKind.UNKNOWN]
+    assert {d.key for d in unknown} == {
+        "buildability",
+        "competition",
+        "monetization",
+    }
+    for d in unknown:
+        assert d.value is None
+        assert d.reason
+    assert "Buildability is unknown" in caveats
+    assert "Competition is unknown" in caveats
+    assert "Monetization is unknown" in caveats
+    assert "placeholder" not in " ".join(d.reason for d in score.dimensions)
 
 
-def test_score_is_not_all_inferred():
+def test_score_total_ignores_unmeasured_dimensions():
+    score = score_opportunity(_problem())
+    measured = [d.value for d in score.dimensions if d.value is not None]
+    assert measured
+    assert score.total == int(round(sum(measured) / float(len(measured))))
+
+
+def test_score_is_not_mostly_unmeasured():
     score = score_opportunity(_problem())
     assert score.observed_ratio >= 0.5
 
@@ -331,4 +345,4 @@ def test_opportunity_roundtrips_to_json():
 # Version
 # --------------------------------------------------------------------------- #
 def test_version_is_newer_than_calculator_release():
-    assert __version__ == "0.4.0"
+    assert __version__ == "0.5.0"

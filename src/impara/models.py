@@ -16,6 +16,9 @@ from typing import Any, Dict, List, Optional
 class EvidenceKind(str, Enum):
     OBSERVED = "observed"
     INFERRED = "inferred"
+    # No evidence-producing mechanism exists for this claim yet. It is neither
+    # observed nor inferred - it is simply not measured.
+    UNKNOWN = "unknown"
 
 
 class Confidence(str, Enum):
@@ -149,7 +152,7 @@ class ScoreDimension:
 
     key: str
     label: str
-    value: int  # 0-100
+    value: Optional[int]  # 0-100, or None when the dimension is not measured
     kind: EvidenceKind
     reason: str
 
