@@ -469,4 +469,14 @@ def test_main_without_a_subcommand_points_at_problems(capsys):
 # Version
 # --------------------------------------------------------------------------- #
 def test_version_is_newer_than_calculator_release():
-    assert __version__ == "0.5.0"
+    import pathlib
+    import re
+
+    # The wheel must never ship a stale version string again: the hardcoded
+    # __version__ and pyproject.toml have to agree.
+    pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+    match = re.search(
+        r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M
+    )
+    assert match is not None, "pyproject.toml has no version field"
+    assert __version__ == match.group(1)

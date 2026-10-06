@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "impara"
-version = "0.5.1"
+version = "0.5.2"
 description = "Discover real, evidence-backed problems worth building"
 readme = "README.md"
 authors = [{ name = "ivanbright", email = "mugishaivanbright250@gmail.com" }]
